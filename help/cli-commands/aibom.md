@@ -1,20 +1,23 @@
-# AI-BOM
+---
+description: The snyk aibom command that generates an AI bill of materials
+---
 
-**Note**: AI-BOM is an experimental feature and is subject to breaking changes without notice. If you are using AI-BOM, Snyk recommends installing the Snyk CLI from the [release](../releases-and-channels-for-the-snyk-cli.md#stable) channel.
+# AI-BOM
 
 ## Prerequisites
 
 - The `snyk aibom` feature requires an internet connection.
 - Snyk CLI v1.1298.3 (or later).
-- Your Project must be written in Python and using a [package manager](../../../supported-languages/supported-languages-list/python/) supported by Snyk.
 
 ## Usage
 
-`$ snyk aibom --experimental [<OPTION>]`
+`$ snyk aibom [<OPTION>]`
+
+**See also:** [`snyk aibom test`](aibom-test.md) — generate an AI-BOM and test it against your tenant's policies.
 
 ## Description
 
-The `snyk aibom` command generates an AI-BOM for a local software Project that is written in Python. You can use the `snyk aibom` command to identify AI models, datasets, and map the AI supply chain, including connections to external tools and services using the Model Context Protocol (MCP).
+The `snyk aibom` command generates an AI-BOM for a local software Project written in Python, Java, JavaScript, or Go. You can use the `snyk aibom` command to identify AI models, datasets, and map the AI supply chain, including connections to external tools and services using the Model Context Protocol (MCP).
 
 The supported format is CycloneDX v1.6 (JSON).
 
@@ -55,7 +58,7 @@ When you run `snyk aibom`, the output shows these dependencies clearly. For exam
 
 ### `--experimental`
 
-**Required**. Use experimental command features. This option is required because the command is in its experimental phase.
+**Deprecated**. The command still accepts this flag for backwards compatibility, but as of Snyk CLI v1.1304.0 it is no longer required to run `snyk aibom`.
 
 ### `--org=<ORG_ID>`
 
@@ -71,19 +74,19 @@ Default: `<ORG_ID>` that is the current preferred Organization in your [Account 
 
 ### `--html`
 
-**Optional.** Embed the AIBOM into an HTML visualization of the AIBOM components and their relationships.
+**Optional**. Embed the AIBOM into an HTML visualization of the AIBOM components and their relationships.
 
 ### `[--json-file-output]`
 
-**Optional.** Save the AIBOM output as a JSON data structure directly to the specified file.
+**Optional**. Save the AIBOM output as a JSON data structure directly to the specified file.
 
-#### Upcoming Features in 1.1303.0
+#### Available in 1.1303.0
 
-### `--upload`&#x20;
+### `--upload`
 
 **Optional**. Persist the AIBOM into your Snyk Organization. This flag requires the [`--repo`](aibom.md#repo) flag. It enables you to view your AI-BOM for the repository in the Evo web interface.
 
-### `--repo`&#x20;
+### `--repo`
 
 **Optional**. Specify the repository to use when persisting the AI-BOM. Required when you use the [`--upload`](aibom.md#upload) flag.
 

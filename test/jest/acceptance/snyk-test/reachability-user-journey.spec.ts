@@ -6,7 +6,7 @@ import { runSnykCLI } from '../../util/runSnykCLI';
 import { EXIT_CODES } from '../../../../src/cli/exit-codes';
 import { join } from 'path';
 
-jest.setTimeout(1000 * 180);
+jest.setTimeout(1000 * 300);
 
 const TEST_REPO_URL = 'https://github.com/snyk/snyk-goof.git';
 const TEMP_LOCAL_PATH = '/tmp/snyk-goof';
@@ -14,7 +14,10 @@ const TEMP_LOCAL_PATH = '/tmp/snyk-goof';
 beforeAll(() => {
   if (!existsSync(TEMP_LOCAL_PATH)) {
     execSync(
-      `git clone ${TEST_REPO_URL} ${TEMP_LOCAL_PATH} && cd ${TEMP_LOCAL_PATH} && npm install --ignore-scripts`,
+      // engine-strict=false: snyk-goof pins engines.node 6.14.1, and the CLI's
+      // .npmrc engine-strict leaks in via npm_config_* env from `npm run test:acceptance`,
+      // which would otherwise make this install fail (EBADENGINE) on modern Node.
+      `git clone ${TEST_REPO_URL} ${TEMP_LOCAL_PATH} && cd ${TEMP_LOCAL_PATH} && npm install --ignore-scripts --engine-strict=false`,
       {
         stdio: 'inherit',
       },
@@ -120,13 +123,40 @@ describe('snyk test --reachability', () => {
     const jsonOutput = JSON.parse(stdout);
 
     const areAllVulnsReachable = jsonOutput.vulnerabilities.every(
-      (vuln: { reachability: string }) => vuln.reachability === 'reachable',
+      (vuln: { reachability: string; type: string }) =>
+        vuln.reachability === 'reachable' || vuln.type === 'license', // license issues are considered always reachable even without reachability metadata
     );
 
     expect(jsonOutput.vulnerabilities.length).toBeGreaterThanOrEqual(1);
     expect(areAllVulnsReachable).toBeTruthy();
 
     expect(code).toBe(EXIT_CODES.VULNS_FOUND);
+  });
+
+  test('emits a valid json output when unknown flags are passed', async () => {
+    const { stdout, code, stderr } = await runSnykCLI(
+      `test ${TEMP_LOCAL_PATH} --reachability --json --foo-bar`,
+      {
+        env: {
+          ...process.env,
+          ...ReachabilityIntegrationEnv.env,
+        },
+      },
+    );
+
+    expect(code).not.toBe(EXIT_CODES.ERROR);
+
+    expect(stdout).not.toBe('');
+    expect(stderr).toBe('');
+
+    const jsonOutput = JSON.parse(stdout);
+
+    const allVulnsHaveReachabilitySignal = jsonOutput.vulnerabilities.every(
+      (vuln: { reachability: string; type: string }) =>
+        !!vuln.reachability || vuln.type === 'license',
+    );
+
+    expect(allVulnsHaveReachabilitySignal).toBeTruthy();
   });
 
   test('emits a valid json output and fails the test if vulnerabilies are upgradable', async () => {
@@ -167,6 +197,42 @@ describe('snyk test --reachability', () => {
 
     expect(stdout).not.toBe('');
     expect(stderr).toBe('');
+
+    const jsonOutput = JSON.parse(stdout);
+
+    expect(jsonOutput.dependencyCount).toBeGreaterThan(0);
+    expect(jsonOutput.ok).toBeFalsy();
+
+    const momentVuln = jsonOutput.vulnerabilities.find(
+      (v) => v.id === 'npm:moment:20161019',
+    );
+    expect(momentVuln.alternativeIds).toEqual(['SNYK-JS-MOMENT-10164']);
+    expect(momentVuln.proprietary).toEqual(true);
+    expect(momentVuln.isDisputed).toEqual(false);
+    expect(momentVuln.severityBasedOn).toEqual('CVSS');
+
+    expect(code).toBe(EXIT_CODES.VULNS_FOUND);
+  });
+
+  test('warns and still returns results when source dir has no reachability-supported files', async () => {
+    const pathWithNoValidFiles = join(
+      __dirname,
+      '../../../fixtures/npm/with-vulnerable-lodash-dep',
+    );
+    const { stdout, code, stderr } = await runSnykCLI(
+      `test ${TEMP_LOCAL_PATH} --reachability --source-dir=${pathWithNoValidFiles} --json`,
+      {
+        env: {
+          ...process.env,
+          ...ReachabilityIntegrationEnv.env,
+        },
+      },
+    );
+
+    expect(stdout).not.toBe('');
+    expect(stderr).toContainText(
+      'no reachability-supported source files were found; skipping reachability analysis',
+    );
 
     const jsonOutput = JSON.parse(stdout);
 

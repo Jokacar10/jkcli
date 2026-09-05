@@ -15,8 +15,8 @@ const featureFlagDefaults = (): Map<string, boolean> => {
     ['iacNewEngine', false],
     ['containerCliAppVulnsEnabled', true],
     ['enablePnpmCli', false],
+    ['enableUvCLI', false],
     ['sbomMonitorBeta', false],
-    ['useImprovedDotnetWithoutPublish', false],
     ['scanUsrLibJars', false],
     ['disableContainerMonitorProjectNameFix', false],
     ['show-maven-build-scope', false],
@@ -32,6 +32,7 @@ const featureFlagDefaults = (): Map<string, boolean> => {
     ['useExperimentalRiskScoreInCLI', false],
     ['sbomTestReachability', false],
     ['useTestShimForOSCliTest', false],
+    ['cliDotnetRuntimeResolution', false],
   ]);
 };
 
@@ -52,6 +53,10 @@ export function getFirstIPv4Address(): string {
   return ipaddress;
 }
 
+// An endpoint answers with either a JSON document or a raw body. The raw form
+// covers downloads that are not JSON, such as a binary report.
+type EndpointResponse = Record<string, unknown> | string;
+
 export type FakeServer = {
   getRequests: () => express.Request[];
   popRequest: () => express.Request;
@@ -66,13 +71,19 @@ export type FakeServer = {
     headers?: Record<string, any>,
   ) => void;
 
-  setEndpointResponse: (
-    endpoint: string,
-    response: Record<string, unknown>,
-  ) => void;
+  setEndpointResponse: (endpoint: string, response: EndpointResponse) => void;
   setEndpointStatusCode: (endpoint: string, code: number) => void;
+  setEndpointStatusCodes: (endpoint: string, codes: number[]) => void;
+  setEndpointResponses: (
+    endpoint: string,
+    responses: EndpointResponse[],
+  ) => void;
+  setEndpointHeaders: (
+    endpoint: string,
+    headers: Record<string, string>,
+  ) => void;
   setStatusCode: (c: number) => void;
-  setStatusCodes: (c: number[]) => void;
+  setResponseDelay: (delayMs: number) => void;
   setLocalCodeEngineConfiguration: (next: Record<string, unknown>) => void;
   setFeatureFlag: (featureFlag: string, enabled: boolean) => void;
   setOrgSetting: (setting: string, enabled: boolean) => void;
@@ -89,6 +100,16 @@ export type FakeServer = {
   getPort: () => number;
 };
 
+interface EndpointConfig {
+  responses: EndpointResponse[];
+  statusCodes: number[];
+  headers: Record<string, string>;
+  responseIndex: number;
+  statusCodeIndex: number;
+  isResponseArray: boolean;
+  isStatusCodeArray: boolean;
+}
+
 export const fakeServer = (basePath: string, snykToken: string): FakeServer => {
   let requests: express.Request[] = [];
   let featureFlags: Map<string, boolean> = featureFlagDefaults();
@@ -101,27 +122,41 @@ export const fakeServer = (basePath: string, snykToken: string): FakeServer => {
   let nextStatusCode: number | undefined = undefined;
   // the status code to return for all the requests
   let statusCode: number | undefined = undefined;
-  let statusCodes: number[] = [];
   let nextResponse: any = undefined;
-  let endpointResponses: Map<string, Record<string, unknown>> = new Map();
-  let endpointStatusCodes: Map<string, number> = new Map();
-  let endpointHeaders: Map<string, string> = new Map();
+  let endpointConfigs: Map<string, EndpointConfig> = new Map();
   let customResponse: Record<string, unknown> | undefined = undefined;
   let sarifResponse: Record<string, unknown> | undefined = undefined;
   let server: http.Server | undefined = undefined;
+  let responseDelayMs = 0;
   const sockets = new Set();
+
+  const getOrCreateEndpointConfig = (endpoint: string): EndpointConfig => {
+    let config = endpointConfigs.get(endpoint);
+    if (!config) {
+      config = {
+        responses: [],
+        statusCodes: [],
+        headers: {},
+        responseIndex: 0,
+        statusCodeIndex: 0,
+        isResponseArray: false,
+        isStatusCodeArray: false,
+      };
+      endpointConfigs.set(endpoint, config);
+    }
+    return config;
+  };
 
   const restore = () => {
     statusCode = undefined;
     requests = [];
     customResponse = undefined;
     sarifResponse = undefined;
-    endpointResponses = new Map();
-    endpointStatusCodes = new Map();
-    endpointHeaders = new Map();
+    endpointConfigs = new Map();
     featureFlags = featureFlagDefaults();
     availableSettings = new Map();
     unauthorizedActions = new Map();
+    responseDelayMs = 0;
   };
 
   const getRequests = () => {
@@ -172,8 +207,8 @@ export const fakeServer = (basePath: string, snykToken: string): FakeServer => {
     statusCode = code;
   };
 
-  const setStatusCodes = (codes: number[]) => {
-    statusCodes = codes;
+  const setResponseDelay = (delayMs: number) => {
+    responseDelayMs = delayMs;
   };
 
   const setGlobalResponse = (
@@ -181,24 +216,140 @@ export const fakeServer = (basePath: string, snykToken: string): FakeServer => {
     code: number,
     headers?: Record<string, string>,
   ) => {
-    endpointResponses.set('*', response);
-    endpointStatusCodes.set('*', code);
+    const config = getOrCreateEndpointConfig('*');
+    config.responses = [response];
+    config.statusCodes = [code];
+    config.isResponseArray = false;
+    config.isStatusCodeArray = false;
+    config.responseIndex = 0;
+    config.statusCodeIndex = 0;
     if (headers) {
-      for (const [key, value] of Object.entries(headers)) {
-        endpointHeaders.set(key, value);
-      }
+      config.headers = { ...headers };
     }
   };
 
   const setEndpointResponse = (
     endpoint: string,
-    response: Record<string, unknown>,
+    response: EndpointResponse,
   ) => {
-    endpointResponses.set(endpoint, response);
+    const config = getOrCreateEndpointConfig(endpoint);
+    config.responses = [response];
+    config.isResponseArray = false;
+    config.responseIndex = 0;
   };
 
   const setEndpointStatusCode = (endpoint: string, code: number) => {
-    endpointStatusCodes.set(endpoint, code);
+    const config = getOrCreateEndpointConfig(endpoint);
+    config.statusCodes = [code];
+    config.isStatusCodeArray = false;
+    config.statusCodeIndex = 0;
+  };
+
+  const setEndpointStatusCodes = (endpoint: string, codes: number[]) => {
+    const config = getOrCreateEndpointConfig(endpoint);
+    config.statusCodes = [...codes];
+    config.isStatusCodeArray = true;
+    config.statusCodeIndex = 0;
+  };
+
+  const setEndpointResponses = (
+    endpoint: string,
+    responses: EndpointResponse[],
+  ) => {
+    const config = getOrCreateEndpointConfig(endpoint);
+    config.responses = [...responses];
+    config.isResponseArray = true;
+    config.responseIndex = 0;
+  };
+
+  const setEndpointHeaders = (
+    endpoint: string,
+    headers: Record<string, string>,
+  ) => {
+    const config = getOrCreateEndpointConfig(endpoint);
+    config.headers = { ...config.headers, ...headers };
+  };
+
+  const handleSpecificResponses = (request, response): boolean => {
+    const endpoint = request.url;
+    const pathOnly = endpoint.split('?')[0];
+    const wildcardEndpoint = '*';
+
+    const config =
+      endpointConfigs.get(wildcardEndpoint) ||
+      endpointConfigs.get(endpoint) ||
+      endpointConfigs.get(pathOnly);
+
+    if (!config) {
+      return false;
+    }
+
+    // configure any response headers
+    if (Object.keys(config.headers).length > 0) {
+      for (const [key, value] of Object.entries(config.headers)) {
+        response.set(key, value);
+      }
+    }
+
+    // For static (non-array) configs, always use index 0
+    // For array configs, check if index is within bounds
+    const hasResponse =
+      config.responses.length > 0 &&
+      (!config.isResponseArray ||
+        config.responseIndex < config.responses.length);
+    const hasStatusCode =
+      config.statusCodes.length > 0 &&
+      (!config.isStatusCodeArray ||
+        config.statusCodeIndex < config.statusCodes.length);
+
+    // Get current status code (default to 200 if not set)
+    const currentStatusCode = hasStatusCode
+      ? config.statusCodes[config.statusCodeIndex]
+      : 200;
+
+    if (!hasResponse && !hasStatusCode) {
+      return false;
+    }
+
+    const currentResponse = hasResponse
+      ? config.responses[config.responseIndex]
+      : null;
+
+    console.log(
+      '[handleSpecificResponses]',
+      JSON.stringify({
+        endpoint,
+        statusCode: currentStatusCode,
+        hasResponseBody: hasResponse,
+        responseIndex: config.responseIndex,
+        statusCodeIndex: config.statusCodeIndex,
+      }),
+    );
+
+    response.status(currentStatusCode);
+
+    // Send response if configured, otherwise send empty response
+    if (hasResponse) {
+      response.send(currentResponse);
+    } else {
+      response.send();
+    }
+
+    // Advance indices for array-based configs
+    if (
+      config.isResponseArray &&
+      config.responseIndex < config.responses.length
+    ) {
+      config.responseIndex++;
+    }
+    if (
+      config.isStatusCodeArray &&
+      config.statusCodeIndex < config.statusCodes.length
+    ) {
+      config.statusCodeIndex++;
+    }
+
+    return true;
   };
 
   const setFeatureFlag = (featureFlag: string, enabled: boolean) => {
@@ -229,31 +380,23 @@ export const fakeServer = (basePath: string, snykToken: string): FakeServer => {
     next();
   });
 
+  // Apply response delay if configured (exclude analytics/instrumentation/init endpoints)
   app.use((req, res, next) => {
-    const endpoint = req.url;
-    const pathOnly = endpoint.split('?')[0];
-
-    const wildcardEndpoint = '*';
-    const endpointResponse =
-      endpointResponses.get(wildcardEndpoint) ||
-      endpointResponses.get(endpoint) ||
-      endpointResponses.get(pathOnly);
-
-    const endpointStatusCode =
-      endpointStatusCodes.get(wildcardEndpoint) ||
-      endpointStatusCodes.get(endpoint) ||
-      endpointStatusCodes.get(pathOnly);
-
-    // configure any response headers
-    if (endpointHeaders.size > 0) {
-      endpointHeaders.forEach((value, key) => {
-        res.set(key, value);
-      });
+    const isExcludedEndpoint =
+      req.url?.includes('/analytics') ||
+      req.url?.includes('/instrumentation') ||
+      req.url?.includes('/v1/track') ||
+      req.url?.includes('/api/rest/orgs/');
+    if (responseDelayMs > 0 && !isExcludedEndpoint) {
+      global.setTimeout(() => next(), responseDelayMs);
+    } else {
+      next();
     }
+  });
 
-    if (endpointResponse) {
-      res.status(endpointStatusCode || 200);
-      res.send(endpointResponse);
+  app.use((req, res, next) => {
+    // check and handle specific responses first
+    if (handleSpecificResponses(req, res)) {
       return;
     }
 
@@ -308,6 +451,30 @@ export const fakeServer = (basePath: string, snykToken: string): FakeServer => {
     res.send('Test Authenticated!');
   });
 
+  app.get(`/api/rest/orgs/:orgId`, (req, res) => {
+    res.status(200);
+    res.send({
+      data: {
+        id: req.params.orgId,
+        type: 'org',
+        attributes: {
+          group_id: 'b2371803-df81-46ba-85e2-d76b2b8dac4f',
+          is_personal: false,
+          name: 'fake testing',
+          slug: 'fake_testing',
+          created_at: '2023-06-09T10:37:07Z',
+          updated_at: '2024-03-22T10:46:32Z',
+        },
+      },
+      jsonapi: {
+        version: '1.0',
+      },
+      links: {
+        self: '/rest/orgs/' + req.params.orgId,
+      },
+    });
+  });
+
   app.get('/rest/self', (req, res) => {
     const defaultResponse = {
       jsonapi: {
@@ -330,6 +497,47 @@ export const fakeServer = (basePath: string, snykToken: string): FakeServer => {
     };
     res.status(200);
     res.send(defaultResponse);
+  });
+
+  // Feature flag batch evaluation used by the Go binary's GAF layer
+  // (config_utils.AddFeatureFlagToConfig → featureflaggateway.EvaluateFlags).
+  // Body: { data: { attributes: { flags: ["flag-name", ...] } } }
+  // GAF derives the URL from the API URL, so the /api prefix may or may not be present.
+  const flagEvaluationPaths = [
+    '/hidden/orgs/:orgId/feature_flags/evaluation',
+    '/api/hidden/orgs/:orgId/feature_flags/evaluation',
+  ];
+  app.post(flagEvaluationPaths, (req, res) => {
+    const flags: string[] = req.body?.data?.attributes?.flags ?? [];
+    // Maps batch evaluation API flag names to their GAF config keys.
+    // The batch endpoint receives short API names; tests call setFeatureFlag
+    // with the full config key. Add an entry here when writing acceptance tests
+    // for a new flag so both forms resolve correctly.
+    const batchNameToConfigKey: Record<string, string> = {
+      'unified-test-api-os-cli':
+        'internal_snyk_cli_use_unified_test_api_for_os_cli_test',
+    };
+    const evaluations = flags.map((key) => {
+      const alias = batchNameToConfigKey[key] ?? key;
+      const enabled = featureFlags.has(key)
+        ? featureFlags.get(key)
+        : featureFlags.has(alias)
+          ? featureFlags.get(alias)
+          : false;
+      return { key, value: enabled, reason: enabled ? 'enabled' : 'disabled' };
+    });
+    res.status(200);
+    res.setHeader('Content-Type', 'application/vnd.api+json');
+    res.send({
+      jsonapi: { version: '1.0' },
+      data: {
+        type: 'feature_flags',
+        attributes: {
+          evaluatedAt: new Date().toISOString(),
+          evaluations,
+        },
+      },
+    });
   });
 
   app.post('/hidden/orgs/:orgId/unmanaged_ecosystem/depgraphs', (req, res) => {
@@ -549,45 +757,20 @@ export const fakeServer = (basePath: string, snykToken: string): FakeServer => {
     });
   });
 
-  app.post(`/api/hidden/orgs/:orgId/upload_revisions`, (req, res) => {
-    res.status(201).send({
-      data: {
-        attributes: {
-          revision_type: 'snapshot',
-          sealed: false,
-        },
-        id: 'bc0729a7-109f-4fe9-a048-aac410e28c9a',
-        type: 'upload_revision',
-      },
-      jsonapi: {
-        version: '1.0',
-      },
-      links: {
-        self: {
-          href: '/orgs/bb262a15-d798-458b-81fa-30a92cb3475c/upload_revisions/bc0729a7-109f-4fe9-a048-aac410e28c9a',
-        },
-      },
-    });
-  });
-
+  // Both prefixes are required due to API URL canonicalisation, performed in some extensions.
   app.post(
-    `/api/hidden/orgs/:orgId/upload_revisions/:uploadRevisionId/files`,
-    (_, res) => {
-      res.status(204);
-      res.send();
-    },
-  );
-
-  app.patch(
-    `/api/hidden/orgs/:orgId/upload_revisions/:uploadRevisionId`,
+    [
+      `/hidden/orgs/:orgId/upload_revisions`,
+      `/api/hidden/orgs/:orgId/upload_revisions`,
+    ],
     (req, res) => {
-      res.status(200).send({
+      res.status(201).send({
         data: {
           attributes: {
             revision_type: 'snapshot',
-            sealed: true,
+            sealed: false,
           },
-          id: 'fbdb5cc0-6e34-4191-b088-0dff740faf38',
+          id: 'bc0729a7-109f-4fe9-a048-aac410e28c9a',
           type: 'upload_revision',
         },
         jsonapi: {
@@ -595,7 +778,45 @@ export const fakeServer = (basePath: string, snykToken: string): FakeServer => {
         },
         links: {
           self: {
-            href: '/orgs/bb262a15-d798-458b-81fa-30a92cb3475c/upload_revisions/fbdb5cc0-6e34-4191-b088-0dff740faf38',
+            href: `/orgs/${req.params.orgId}/upload_revisions/bc0729a7-109f-4fe9-a048-aac410e28c9a`,
+          },
+        },
+      });
+    },
+  );
+
+  app.post(
+    [
+      `/hidden/orgs/:orgId/upload_revisions/:uploadRevisionId/files`,
+      `/api/hidden/orgs/:orgId/upload_revisions/:uploadRevisionId/files`,
+    ],
+    (_, res) => {
+      res.status(204);
+      res.send();
+    },
+  );
+
+  app.patch(
+    [
+      `/hidden/orgs/:orgId/upload_revisions/:uploadRevisionId`,
+      `/api/hidden/orgs/:orgId/upload_revisions/:uploadRevisionId`,
+    ],
+    (req, res) => {
+      res.status(200).send({
+        data: {
+          attributes: {
+            revision_type: 'snapshot',
+            sealed: true,
+          },
+          id: req.params.uploadRevisionId,
+          type: 'upload_revision',
+        },
+        jsonapi: {
+          version: '1.0',
+        },
+        links: {
+          self: {
+            href: `/orgs/${req.params.orgId}/upload_revisions/${req.params.uploadRevisionId}`,
           },
         },
       });
@@ -639,6 +860,35 @@ export const fakeServer = (basePath: string, snykToken: string): FakeServer => {
       },
     });
   });
+
+  // AI-BOM CLI policy test (aibom test command)
+  app.post(
+    `/api/hidden/orgs/:orgId/ai_boms/cli_policy_test`,
+    (req: express.Request, res: express.Response) => {
+      res.status(200);
+      res.setHeader('Content-Type', 'application/vnd.api+json');
+      res.send({
+        jsonapi: { version: '1.0' },
+        data: {
+          id: 'cli-policy-test-run-1',
+          type: 'test',
+          attributes: {
+            issues: [
+              {
+                id: 'issue-1',
+                description: 'Disallowed model',
+                severity: 'high',
+                policy_id: 'pol-123',
+                state: 'open',
+                source: 'policy',
+                remediation_advice: 'Use an allowed model',
+              },
+            ],
+          },
+        },
+      });
+    },
+  );
 
   // Unified Test API endpoints for uv acceptance tests
   const testJobId = 'aaaaaaaa-bbbb-cccc-dddd-000000000001';
@@ -714,124 +964,6 @@ export const fakeServer = (basePath: string, snykToken: string): FakeServer => {
     });
   });
 
-  app.post(`/api/hidden/orgs/:orgId/ai_scans`, (req, res) => {
-    res.status(201);
-    res.send({
-      jsonapi: { version: '1.0' },
-      links: {
-        self: `/api/hidden/orgs/${req.params.orgId}/ai_scans/59622253-75f3-4439-ac1e-ce94834c5804`,
-      },
-      data: {
-        id: '59622253-75f3-4439-ac1e-ce94834c5804',
-        type: 'ai_scan',
-        attributes: { status: 'started' },
-      },
-    });
-  });
-
-  app.get(`/api/hidden/orgs/:orgId/ai_scans/:id`, (req, res) => {
-    res.status(200);
-    res.send({
-      jsonapi: { version: '1.0' },
-      links: {},
-      data: {
-        id: req.params.id,
-        type: 'ai_scan',
-        status: 'completed',
-      },
-    });
-  });
-
-  app.get(
-    `/api/hidden/orgs/:orgId/ai_scans/:id/vulnerabilities`,
-    (req, res) => {
-      res.status(200);
-      res.send({
-        jsonapi: { version: '1.0' },
-        links: {},
-        data: {
-          id: '59622253-75f3-4439-ac1e-ce94834c5804',
-          results: [
-            {
-              id: '59622253-75f3-4439-ac1e-ce94834c5804',
-              severity: 'medium',
-              definition: {
-                id: 'system_prompt_exfiltration',
-                name: 'System Prompt Exfiltration',
-                description: 'The system prompt was exfiltrated.',
-              },
-              url: 'https://demo-app.com/api/chat',
-              evidence: {
-                type: 'raw',
-                content: {
-                  reason:
-                    'The model disclosed confidential system instructions.',
-                },
-              },
-            },
-          ],
-        },
-      });
-    },
-  );
-
-  app.get(`/api/hidden/orgs/:orgId/scanning_agents`, (req, res) => {
-    res.status(200);
-    res.send({
-      jsonapi: { version: '1.0' },
-      links: {},
-      data: [
-        {
-          name: 'test-agent',
-          installer_generated: false,
-          id: '59622253-75f3-4439-ac1e-ce94834c5804',
-          online: true,
-          fallback: false,
-          rx_bytes: 1000,
-          tx_bytes: 1000,
-          latest_handshake: 1000,
-        },
-      ],
-    });
-  });
-
-  app.post(`/api/hidden/orgs/:orgId/scanning_agents`, (req, res) => {
-    res.status(201);
-    res.send({
-      jsonapi: { version: '1.0' },
-      links: {},
-      data: {
-        name: 'test-agent',
-        installer_generated: false,
-        id: '59622253-75f3-4439-ac1e-ce94834c5804',
-        online: true,
-        fallback: false,
-        rx_bytes: 1000,
-        tx_bytes: 1000,
-        latest_handshake: 1000,
-      },
-    });
-  });
-
-  app.post(
-    `/api/hidden/orgs/:orgId/scanning_agents/:id/generate`,
-    (req, res) => {
-      res.status(200);
-      res.send({
-        jsonapi: { version: '1.0' },
-        links: {},
-        data: {
-          token: 'test-token',
-        },
-      });
-    },
-  );
-
-  app.delete(`/api/hidden/orgs/:orgId/scanning_agents/:id`, (req, res) => {
-    res.status(204);
-    res.send();
-  });
-
   app.post(basePath + '/vuln/:registry', (req, res, next) => {
     const vulnerabilities = [];
     if (req.query.org && req.query.org === 'missing-org') {
@@ -866,12 +998,6 @@ export const fakeServer = (basePath: string, snykToken: string): FakeServer => {
         userMessage:
           'Org missing-org was not found or you may not have the correct permissions',
       });
-      return next();
-    }
-
-    const statusCode = statusCodes.shift();
-    if (statusCode && statusCode !== 200) {
-      res.sendStatus(statusCode);
       return next();
     }
 
@@ -1529,6 +1655,9 @@ ${componentsXml}
   ): Promise<void> => {
     return new Promise((resolve, reject) => {
       server = https.createServer(options, app);
+      server.on('connection', (socket) => {
+        sockets.add(socket);
+      });
       server.once('listening', () => {
         resolve();
       });
@@ -1539,23 +1668,26 @@ ${componentsXml}
     });
   };
 
+  const destroySockets = () => {
+    for (const socket of sockets) {
+      (socket as net.Socket)?.destroy();
+      sockets.delete(socket);
+    }
+  };
+
   const closePromise = () => {
     return new Promise<void>((resolve) => {
       if (!server) {
         resolve();
         return;
       }
+      destroySockets();
       server.close(() => resolve());
       server = undefined;
     });
   };
 
   const close = (callback: () => void) => {
-    for (const socket of sockets) {
-      (socket as net.Socket)?.destroy();
-      sockets.delete(socket);
-    }
-
     closePromise().then(callback);
   };
 
@@ -1578,9 +1710,12 @@ ${componentsXml}
     setNextStatusCode,
     setEndpointResponse,
     setEndpointStatusCode,
+    setEndpointStatusCodes,
+    setEndpointResponses,
+    setEndpointHeaders,
     setGlobalResponse,
     setStatusCode,
-    setStatusCodes,
+    setResponseDelay,
     setFeatureFlag,
     setOrgSetting,
     unauthorizeAction,

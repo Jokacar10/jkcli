@@ -21,6 +21,8 @@ export interface Options {
   systemVersions?: object;
   scanAllUnmanaged?: boolean;
   showNpmScope?: boolean;
+  allProjects?: boolean;
+  includeComponentMetadata?: boolean;
 }
 
 export interface Plugin {

@@ -1,3 +1,7 @@
+---
+description: The snyk code test command that runs a Snyk Code static analysis test
+---
+
 # Code test
 
 ## Usage
@@ -33,6 +37,8 @@ This creates a project in your Snyk account with a snapshot of the current issue
 
 After using this option, log in to the Snyk website and view your projects to see the snapshot.
 
+**Note:** When using `--report`, the service account or user token must have the **View Project Ignores** permission enabled. This permission is required to access ignore information when reporting results to the Snyk Web UI. If you receive a 403 Forbidden error, ensure your service account role includes this permission.
+
 Example: `$ snyk code test --report`
 
 ### `--project-name=<PROJECT_NAME>`
@@ -40,6 +46,18 @@ Example: `$ snyk code test --report`
 **Required** when using `--report`. Specify a custom Snyk project name.
 
 Example: `$ snyk code test --report --project-name=my-project`
+
+### `--project-tags=<TAG>[,<TAG>...]`
+
+Use this option with the `--report` option.
+
+Set one or more project tags for your project. Specify tags as comma-separated `key=value` pairs.
+
+Example: `--project-tags=department=finance,team=alpha`
+
+To clear all project tags, set `--project-tags=`.
+
+For more information about valid characters, visit [Project tags](https://app.gitbook.com/s/BJO0IZx7zB6bOkotxQP2/scan-with-snyk/snyk-projects/project-tags).
 
 ### `--target-name=<TARGET_NAME>`
 
@@ -111,7 +129,9 @@ Example: `$ snyk code test --sarif`
 
 Save test output in SARIF format directly to the \<OUTPUT_FILE_PATH> file, regardless of whether or not you use the `--sarif` option.
 
-Use to display the human-readable test output using stdout and, at the same time, save the SARIF format output to a file.
+Use to display the human-readable test output using stdout and, at the same time, save the SARIF format output to a file.\
+\
+When running multiple scans, such as SCA and Code scans, the SARIF output includes data only from the most recently completed scan. If you run multiple scans sequentially and specify the same `--sarif-file-output` file path, each subsequent scan overwrites the previous SARIF file. To keep results separate, save each scan to a different SARIF output file.
 
 ### `--severity-threshold=<low|medium|high>`
 

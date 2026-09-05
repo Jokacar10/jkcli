@@ -1,3 +1,7 @@
+---
+description: The snyk monitor command that snapshots and monitors a Project
+---
+
 # Monitor
 
 ## Usage
@@ -46,7 +50,7 @@ See also subsequent sections for options for specific build environments, packag
 
 ### `--reachability=<true|false>`
 
-Perform reachability analysis during the scan. This feature is currently in Snyk Preview. For more information, refer to [Reachability analysis](../../../manage-risk/prioritize-issues-for-fixing/reachability-analysis.md).
+Perform reachability analysis during the scan. This feature is currently in Snyk Preview. For more information, refer to [Reachability analysis](https://docs.snyk.io/manage-risk/prioritize-issues-for-fixing/reachability-analysis)
 
 Default: `false`
 
@@ -241,6 +245,12 @@ Snyk reports the test results per individual `pom.xml` file within the aggregate
 
 **Note:** You can use `--all-projects` when scanning Maven aggregate projects, but you cannot use `--all-projects` with `--maven-aggregate-project`.
 
+### `--maven-skip-wrapper`
+
+Forces the use of a globally installed `mvn` command, even when a Maven wrapper (i.e. `mvnw` or `mvnw.cmd`) is present in the project.
+
+Some projects include a Maven wrapper but users may prefer (or be required by their CI environment) to use a globally installed `mvn` instead. This option gives an explicit escape hatch without having to remove the wrapper from the project.
+
 ### `--scan-unmanaged`
 
 To monitor individual JAR, WAR, and AAR files, use the following:
@@ -261,7 +271,7 @@ Auto-detect Maven, JAR, WAR, and AAR files recursively from the current folder.
 
 ### Maven-specific options
 
-Add the `--` option for Maven-specific options, followed by the Maven option.&#x20;
+Add the `--` option for Maven-specific options, followed by the Maven option.
 
 The following examples are not all-inclusive. For more details, see [Maven CLI options](https://maven.apache.org/ref/3.9.11/maven-embedder/cli.html)
 
@@ -331,7 +341,7 @@ This is useful when you have multiple projects with the same name in other `.sln
 
 **Note:** This option in in Early Access and may change until it is released.
 
-Required. You must use this option when you test .NET projects using [Runtime Resolution Scanning](../../../supported-languages/supported-languages-list/.net/improved-.net-scanning.md)
+Required. You must use this option when you test .NET projects using Runtime Resolution Scanning.
 
 Example: `snyk test --dotnet-runtime-resolution`
 

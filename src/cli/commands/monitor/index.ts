@@ -53,6 +53,7 @@ import {
   hasFeatureFlagOrDefault,
   SHOW_MAVEN_BUILD_SCOPE,
   SHOW_NPM_SCOPE,
+  CLI_DOTNET_RUNTIME_RESOLUTION,
   isFeatureFlagSupportedForOrg,
 } from '../../../lib/feature-flags';
 import {
@@ -64,9 +65,10 @@ import {
   APP_VULNS_OPTION,
 } from '../constants';
 import {
-  PNPM_FEATURE_FLAG,
-  DOTNET_WITHOUT_PUBLISH_FEATURE_FLAG,
+  UV_FEATURE_FLAG,
   MAVEN_DVERBOSE_EXHAUSTIVE_DEPS_FF,
+  INCLUDE_GO_STANDARD_LIBRARY_DEPS_FEATURE_FLAG,
+  DISABLE_GO_PACKAGE_URLS_IN_CLI_FEATURE_FLAG,
 } from '../../../lib/package-managers';
 import { normalizeTargetFile } from '../../../lib/normalize-target-file';
 import { getOrganizationID } from '../../../lib/organization';
@@ -201,30 +203,24 @@ export default async function monitor(...args0: MethodArgs): Promise<any> {
     );
   }
 
-  let hasPnpmSupport = false;
-  let hasImprovedDotnetWithoutPublish = false;
-  let enableMavenDverboseExhaustiveDeps = false;
-  try {
-    hasPnpmSupport = (await hasFeatureFlag(
-      PNPM_FEATURE_FLAG,
-      options,
-    )) as boolean;
-    if (options['dotnet-runtime-resolution']) {
-      hasImprovedDotnetWithoutPublish = (await hasFeatureFlag(
-        DOTNET_WITHOUT_PUBLISH_FEATURE_FLAG,
-        options,
-      )) as boolean;
-    }
-  } catch (err) {
-    hasPnpmSupport = false;
-  }
+  const hasUvSupport = await hasFeatureFlagOrDefault(UV_FEATURE_FLAG, options);
+  const includeGoStandardLibraryDeps = await hasFeatureFlagOrDefault(
+    INCLUDE_GO_STANDARD_LIBRARY_DEPS_FEATURE_FLAG,
+    options,
+  );
+  const disableGoPackageUrls = await hasFeatureFlagOrDefault(
+    DISABLE_GO_PACKAGE_URLS_IN_CLI_FEATURE_FLAG,
+    options,
+  );
 
+  let enableMavenDverboseExhaustiveDeps = false;
   try {
     const args = options['_doubleDashArgs'] || [];
     const verboseEnabled =
       args.includes('-Dverbose') ||
       args.includes('-Dverbose=true') ||
-      !!options['print-graph'];
+      !!options['print-graph'] ||
+      !!options['print-output-jsonl-with-errors'];
     if (verboseEnabled) {
       enableMavenDverboseExhaustiveDeps = (await hasFeatureFlag(
         MAVEN_DVERBOSE_EXHAUSTIVE_DEPS_FF,
@@ -239,12 +235,15 @@ export default async function monitor(...args0: MethodArgs): Promise<any> {
     enableMavenDverboseExhaustiveDeps = false;
   }
 
-  const featureFlags = hasPnpmSupport
-    ? new Set<string>([PNPM_FEATURE_FLAG])
-    : new Set<string>();
-
-  if (hasImprovedDotnetWithoutPublish) {
-    options.useImprovedDotnetWithoutPublish = true;
+  const featureFlags = new Set<string>();
+  if (hasUvSupport) {
+    featureFlags.add(UV_FEATURE_FLAG);
+  }
+  if (includeGoStandardLibraryDeps) {
+    featureFlags.add(INCLUDE_GO_STANDARD_LIBRARY_DEPS_FEATURE_FLAG);
+  }
+  if (disableGoPackageUrls) {
+    featureFlags.add(DISABLE_GO_PACKAGE_URLS_IN_CLI_FEATURE_FLAG);
   }
 
   const showMavenScope = await isFeatureFlagSupportedForOrg(
@@ -261,6 +260,15 @@ export default async function monitor(...args0: MethodArgs): Promise<any> {
   );
   if (showScope.ok) {
     featureFlags.add(SHOW_NPM_SCOPE);
+  }
+
+  const dotnetRuntimeResolution = await isFeatureFlagSupportedForOrg(
+    CLI_DOTNET_RUNTIME_RESOLUTION,
+    getOrganizationID(),
+  );
+  if (dotnetRuntimeResolution.ok) {
+    debug('cliDotnetRuntimeResolution feature flag is enabled');
+    featureFlags.add(CLI_DOTNET_RUNTIME_RESOLUTION);
   }
 
   // Part 1: every argument is a scan target; process them sequentially

@@ -66,6 +66,13 @@ const (
 const (
 	configKeyErrFile         = "INTERNAL_ERR_FILE_PATH"
 	ERROR_HAS_BEEN_DISPLAYED = "hasBeenDisplayed"
+	// ConfigKeyRequestConcurrency is the configuration key holding the
+	// resolved maximum number of concurrent in-flight Snyk dependency-test
+	// or dependency-monitor HTTP requests issued by the legacy CLI. The
+	// user-facing SNYK_REQUEST_CONCURRENCY env var feeds this key (registered
+	// in main.go via AddAlternativeKeys); the resolved value is forwarded to
+	// the legacy CLI process via constants.SNYK_INTERNAL_REQUEST_CONCURRENCY_ENV.
+	ConfigKeyRequestConcurrency = "internal_request_concurrency"
 )
 
 var (
@@ -124,7 +131,7 @@ func (c *CLI) Init() (err error) {
 		if _, err = os.Stat(c.CacheDirectory); os.IsNotExist(err) {
 			err = os.MkdirAll(c.CacheDirectory, utils.DIR_PERMISSION)
 			if err != nil {
-				return fmt.Errorf("Cache directory path is invalid: %w", err)
+				return fmt.Errorf("Cache directory path is invalid: %w", err) //nolint:staticcheck // user-facing error message
 			}
 		}
 	}
@@ -256,15 +263,15 @@ func (c *CLI) printVersion() {
 
 func (c *CLI) commandVersion(passthroughArgs []string) error {
 	if utils.Contains(passthroughArgs, "--json-file-output") {
-		return fmt.Errorf("The following option combination is not currently supported: version + json-file-output")
+		return fmt.Errorf("The following option combination is not currently supported: version + json-file-output") //nolint:staticcheck // user-facing error message
 	} else {
 		c.printVersion()
 		return nil
 	}
 }
 
-func (c *CLI) commandAbout(proxyInfo *proxy.ProxyInfo, passthroughArgs []string) error {
-	err := c.executeV1Default(proxyInfo, passthroughArgs)
+func (c *CLI) commandAbout(ctx context.Context, proxyInfo *proxy.ProxyInfo, passthroughArgs []string) error {
+	err := c.executeV1Default(ctx, proxyInfo, passthroughArgs)
 	if err != nil {
 		return err
 	}
@@ -329,7 +336,7 @@ func PrepareV1EnvironmentVariables(
 	if !integrationNameExists && !integrationVersionExists {
 		inputAsMap[constants.SNYK_INTEGRATION_NAME_ENV] = integrationName
 		inputAsMap[constants.SNYK_INTEGRATION_VERSION_ENV] = integrationVersion
-	} else if !(integrationNameExists && integrationVersionExists) {
+	} else if !integrationNameExists || !integrationVersionExists {
 		err = EnvironmentWarning{message: fmt.Sprintf("Partially defined environment, please ensure to provide both %s and %s together!", constants.SNYK_INTEGRATION_NAME_ENV, constants.SNYK_INTEGRATION_VERSION_ENV)}
 	}
 
@@ -337,6 +344,9 @@ func PrepareV1EnvironmentVariables(
 	inputAsMap[constants.SNYK_HTTPS_PROXY_ENV_SYSTEM], _ = utils.FindValueCaseInsensitive(inputAsMap, constants.SNYK_HTTPS_PROXY_ENV)
 	inputAsMap[constants.SNYK_HTTP_PROXY_ENV_SYSTEM], _ = utils.FindValueCaseInsensitive(inputAsMap, constants.SNYK_HTTP_PROXY_ENV)
 	inputAsMap[constants.SNYK_HTTP_NO_PROXY_ENV_SYSTEM], _ = utils.FindValueCaseInsensitive(inputAsMap, constants.SNYK_HTTP_NO_PROXY_ENV)
+
+	// preserve original OPENSSL_CONF so the Go binary can be re-invoked with FIPS support
+	inputAsMap[constants.SNYK_OPENSSL_CONF_SYSTEM], _ = utils.FindValueCaseInsensitive(inputAsMap, constants.SNYK_OPENSSL_CONF)
 
 	if err == nil {
 		// apply blacklist: ensure that no existing no_proxy or other configuration causes redirecting internal communication that is meant to stay between cliv1 and cliv2
@@ -352,6 +362,7 @@ func PrepareV1EnvironmentVariables(
 			constants.SNYK_NPM_ALL_PROXY,
 			constants.SNYK_OPENSSL_CONF,
 			constants.SNYK_INTERNAL_PREVIEW_FEATURES_ENABLED,
+			constants.SNYK_INTERNAL_REQUEST_CONCURRENCY_ENV,
 			constants.DEBUG_CONST,
 		}
 
@@ -388,6 +399,16 @@ func fillEnvironmentFromConfig(inputAsMap map[string]string, config configuratio
 	inputAsMap[constants.SNYK_INTERNAL_ERR_FILE] = config.GetString(configKeyErrFile)
 	inputAsMap[constants.SNYK_TEMP_PATH] = config.GetString(configuration.TEMP_DIR_PATH)
 
+	// Forward the resolved request concurrency to the legacy CLI when the user
+	// set the value. We can't use config.IsSet here: in GAF, IsSet does not
+	// pre-bind env vars for alternative keys, so it returns false even when
+	// the SNYK_REQUEST_CONCURRENCY env var is set under WithSupportedEnvVarPrefixes
+	// (the production setup). GetString goes through GAF's get(), which binds
+	// the alt key before reading, so it returns the resolved value correctly.
+	if v := config.GetString(ConfigKeyRequestConcurrency); v != "" {
+		inputAsMap[constants.SNYK_INTERNAL_REQUEST_CONCURRENCY_ENV] = v
+	}
+
 	if config.GetBool(configuration.PREVIEW_FEATURES_ENABLED) {
 		inputAsMap[constants.SNYK_INTERNAL_PREVIEW_FEATURES_ENABLED] = "1"
 	}
@@ -420,7 +441,7 @@ func (c *CLI) PrepareV1Command(
 
 	if c.executablePath != "" {
 		snykCmd.Env = append(snykCmd.Env,
-			fmt.Sprintf("%s=%s", constants.SNYK_CLI_EXECUTABLE_PATH_ENV, c.executablePath))
+			fmt.Sprintf("%s=%s", constants.SNYK_INTERNAL_CLI_EXECUTABLE_PATH_ENV, c.executablePath))
 	}
 
 	if len(c.WorkingDirectory) > 0 {
@@ -430,14 +451,11 @@ func (c *CLI) PrepareV1Command(
 	return snykCmd, err
 }
 
-func (c *CLI) executeV1Default(proxyInfo *proxy.ProxyInfo, passThroughArgs []string) error {
+func (c *CLI) executeV1Default(ctx context.Context, proxyInfo *proxy.ProxyInfo, passThroughArgs []string) error {
 	timeout := c.globalConfig.GetInt(configuration.TIMEOUT)
-	var ctx context.Context
 	var cancel context.CancelFunc
-	if timeout == 0 {
-		ctx = context.Background()
-	} else {
-		ctx, cancel = context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
+	if timeout > 0 {
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
 		defer cancel()
 	}
 
@@ -465,7 +483,7 @@ func (c *CLI) executeV1Default(proxyInfo *proxy.ProxyInfo, passThroughArgs []str
 			constants.SNYK_ANALYTICS_DISABLED_ENV,
 			constants.SNYK_ENDPOINT_ENV,
 			constants.SNYK_ORG_ENV,
-			constants.SNYK_CLI_EXECUTABLE_PATH_ENV,
+			constants.SNYK_INTERNAL_CLI_EXECUTABLE_PATH_ENV,
 		}
 
 		for _, key := range listedEnvironmentVariables {
@@ -542,17 +560,19 @@ func GetErrorFromFile(execErr error, errFilePath string, config configuration.Co
 	return nil, ErrIPCNoDataSent
 }
 
-func (c *CLI) Execute(proxyInfo *proxy.ProxyInfo, passThroughArgs []string) error {
+func (c *CLI) Execute(ctx context.Context, proxyInfo *proxy.ProxyInfo, passThroughArgs []string) error {
 	var err error
 	handler := determineHandler(passThroughArgs)
 
-	switch {
-	case handler == V2_VERSION:
+	switch handler {
+	case V2_VERSION:
 		err = c.commandVersion(passThroughArgs)
-	case handler == V2_ABOUT:
-		err = c.commandAbout(proxyInfo, passThroughArgs)
+	case V2_ABOUT:
+		err = c.commandAbout(ctx, proxyInfo, passThroughArgs)
+	case V1_DEFAULT:
+		fallthrough
 	default:
-		err = c.executeV1Default(proxyInfo, passThroughArgs)
+		err = c.executeV1Default(ctx, proxyInfo, passThroughArgs)
 	}
 
 	return err
@@ -612,10 +632,7 @@ func GetErrorDisplayStatus(config configuration.Configuration) bool {
 	useSTDIO := config.GetBool(configuration.WORKFLOW_USE_STDIO)
 	jsonEnabled := config.GetBool(output_workflow.OUTPUT_CONFIG_KEY_JSON)
 
-	hasBeenDisplayed := false
-	if useSTDIO && jsonEnabled {
-		hasBeenDisplayed = true
-	}
+	hasBeenDisplayed := useSTDIO && jsonEnabled
 
 	return hasBeenDisplayed
 }

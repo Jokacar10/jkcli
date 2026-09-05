@@ -1,3 +1,7 @@
+---
+description: The snyk test command that tests a Project for vulnerabilities
+---
+
 # Test
 
 ## Usage
@@ -37,7 +41,7 @@ See also subsequent sections for options for specific build environments, packag
 
 ### `--reachability=<true|false>`
 
-Perform reachability analysis during the scan. This feature is currently in Snyk Preview. For more information, refer to [Reachability analysis](../../../manage-risk/prioritize-issues-for-fixing/reachability-analysis.md).
+Perform reachability analysis during the scan. This feature is currently in Snyk Preview. For more information, refer to [Reachability analysis](https://docs.snyk.io/manage-risk/prioritize-issues-for-fixing/reachability-analysis)
 
 Default: `false`
 
@@ -214,6 +218,8 @@ Save test output in SARIF format directly to the \<OUTPUT_FILE_PATH> file, regar
 
 This is especially useful if you want to display the human-readable test output using stdout and at the same time save the SARIF format output to a file.
 
+When running multiple scans, such as SCA and Code scans, the SARIF output includes data only from the most recently completed scan. If you run multiple scans sequentially and specify the same `--sarif-file-output` file path, each subsequent scan overwrites the previous SARIF file. To keep results separate, save each scan to a different SARIF output file.
+
 ### `--severity-threshold=<low|medium|high|critical>`
 
 Report only vulnerabilities at the specified level or higher.
@@ -252,6 +258,12 @@ Snyk reports the test results per individual `pom.xml` file within the aggregate
 
 **Note:** You can use `--all-projects` when scanning Maven aggregate projects, but you cannot use `--all-projects` with `--maven-aggregate-project`.
 
+### `--maven-skip-wrapper`
+
+Forces the use of a globally installed `mvn` command, even when a Maven wrapper (i.e. `mvnw` or `mvnw.cmd`) is present in the project.
+
+Some projects include a Maven wrapper but users may prefer (or be required by their CI environment) to use a globally installed `mvn` instead. This option gives an explicit escape hatch without having to remove the wrapper from the project.
+
 ### `--scan-unmanaged`
 
 To test individual JAR, WAR, and AAR files, use the following:
@@ -274,11 +286,11 @@ Auto-detect Maven, JAR, WAR, and AAR files recursively from the current folder.
 
 ### Maven-specific options
 
-Add the `--` option for Maven-specific options, followed by the Maven option.&#x20;
+Add the `--` option for Maven-specific options, followed by the Maven option.
 
 The following examples are not all-inclusive. For more details, see [Maven CLI options](https://maven.apache.org/ref/3.9.11/maven-embedder/cli.html).
 
-Examples: `-- -Dpkg_version=1.4`; `-- -Dprofile=my-profile`; `-- -s path/to/settings.xml` &#x20;
+Examples: `-- -Dpkg_version=1.4`; `-- -Dprofile=my-profile`; `-- -s path/to/settings.xml`
 
 ## Options for Gradle projects
 
@@ -362,17 +374,7 @@ This is useful when you have multiple projects with the same name in other `.sln
 
 ## Options for .NET projects
 
-### `--dotnet-runtime-resolution`
-
-**Note:** This option in Early Access and may change until it is released.
-
-Required. You must use this option when you test .NET projects using [Runtime Resolution Scanning](../../../supported-languages/supported-languages-list/.net/improved-.net-scanning.md)
-
-Example: `snyk test --dotnet-runtime-resolution`
-
 ### `--dotnet-target-framework`
-
-**Note:** This option in Early Access and may change until it is released.
 
 Optional. You may use this option if your solution contains multiple `<TargetFramework>` directives. If you do not specify the option `--dotnet-target-framework`, all supported Target Frameworks will be scanned.
 
