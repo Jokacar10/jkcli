@@ -7,7 +7,7 @@ import { runSnykCLI } from '../../util/runSnykCLI';
 
 jest.setTimeout(60_000);
 
-describe('snyk secrets test TOON output', () => {
+describe('snyk secrets test HTML output', () => {
   const orgId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
   const testId = 'aaaaaaaa-bbbb-cccc-dddd-000000000002';
   const testPath = `/rest/orgs/${orgId}/tests/${testId}`;
@@ -41,7 +41,7 @@ describe('snyk secrets test TOON output', () => {
   afterAll(() => server.closePromise());
 
   describe.each([0, 1])('%i findings', (count) => {
-    test.each(['--toon', '--toon-file-output=result.toon'])(
+    test.each(['--html', '--html-file-output=result.html'])(
       '%s preserves the result and exit code',
       async (flag) => {
         server.setEndpointResponse(testPath, {
@@ -64,9 +64,10 @@ describe('snyk secrets test TOON output', () => {
                   id: '00000000-0000-4000-8000-000000000003',
                   type: 'findings',
                   attributes: {
-                    finding_type: 'secret',
+                    finding_type: 'secrets',
                     title: 'Synthetic secret',
                     key: 'synthetic-secret',
+                    description: 'A synthetic secret for acceptance testing.',
                     cause_of_failure: true,
                     rating: { severity: 'high' },
                     locations: [
@@ -108,25 +109,34 @@ describe('snyk secrets test TOON output', () => {
         expect(stderr).toBe('');
         expect(code).toBe(count ? 1 : 0);
         const output =
-          flag === '--toon'
+          flag === '--html'
             ? stdout
-            : await fs.readFile(join(directory, 'result.toon'), 'utf8');
-        expect(output).toMatch(/^results\[1\]:/);
-        expect(output).toContain('executionState: finished');
-        expect(output).toContain('errors: null');
-        expect(output).toContain(`passFail: ${count ? 'fail' : 'pass'}`);
-        expect(output).toContain(`count: ${count}`);
-        expect(output).toContain('effectiveSummary:');
-        expect(output).toContain('rawSummary:');
+            : await fs.readFile(join(directory, 'result.html'), 'utf8');
+        expect(output).toMatch(/^<!doctype html>/);
+        expect(output).toContain('<title>Snyk Test Report</title>');
+        expect(output).toContain(
+          '<span class="meta-label">Test type</span><span class="meta-value">Secret Detection</span>',
+        );
         if (count) {
-          expect(output).toContain('finding_type: secret');
-          expect(output).toContain('config.txt');
-          expect(output).toContain('Synthetic secret');
+          expect(output).toContain('Open issues: 1');
+          expect(output).toContain('Open Secrets Issues (1)');
+          expect(output).toContain('class="issue-card severity--high"');
+          expect(output).toContain('<h3>Synthetic secret</h3>');
+          expect(output).toContain(
+            '<li class="card-meta-item">synthetic-secret</li>',
+          );
+          expect(output).toContain('<li class="card-meta-item">Secrets</li>');
+          expect(output).toContain(
+            'Found in: <strong>config.txt, line 1</strong>',
+          );
         } else {
-          expect(output).toContain('findings: []');
+          expect(output).toContain('content="0 open issues.">');
+          expect(output).toContain('Open issues: 0');
+          expect(output).not.toContain('Open Secrets Issues');
+          expect(output).not.toContain('<div class="issue-card');
         }
-        if (flag !== '--toon') {
-          expect(stdout).not.toMatch(/results\[\d+\]:/);
+        if (flag !== '--html') {
+          expect(stdout).not.toMatch(/^<!doctype html>/);
           expect(stdout).toContain('Secret Detection');
         }
         expect(server.getRequests()).toEqual(

@@ -7,32 +7,47 @@ import { getAvailableServerPort } from '../../../util/getServerPort';
 
 jest.setTimeout(1000 * 60);
 
-const toonEnvelope = /^results\[\d+\]:/;
+const htmlDoctype = /^<!doctype html>/;
 
-// Structure from GAF internal/presenters/testdata/ufm/toon/{sca,empty_sca}.toon
-// — contract fields only, not byte goldens from real scans.
-function expectUfmToonContract(stdout: string, variant: 'sca' | 'empty_sca') {
-  expect(stdout).toMatch(toonEnvelope);
-  expect(stdout).toContain('executionState: finished');
-  expect(stdout).toContain('errors: null');
-  expect(stdout).toContain('effectiveSummary');
-  expect(stdout).toContain('rawSummary');
+// Structure from GAF internal/presenters/templates/ufm.html.tmpl and its
+// golden fixture internal/presenters/testdata/ufm/cli.html — contract
+// markers only, not a byte golden from a real scan.
+function expectUfmHtmlContract(html: string, variant: 'sca' | 'empty_sca') {
+  expect(html).toMatch(htmlDoctype);
+  expect(html).toContain('<title>Snyk Test Report</title>');
+  expect(html).toContain(
+    '<span class="meta-label">Test type</span><span class="meta-value">Software Composition Analysis</span>',
+  );
 
   if (variant === 'sca') {
-    expect(stdout).toContain('passFail: fail');
-    expect(stdout).toContain('finding_type: sca');
-    expect(stdout).toContain('type: findings');
-    expect(stdout).toContain('attributes:');
-    expect(stdout).toContain('locations');
-    expect(stdout).toContain('problems');
+    expect(html).toContain('Open issues: 2');
+    expect(html).toContain('Open Security Issues (2)');
+    expect(html).toContain('class="issue-card severity--medium"');
+    expect(html).toContain('class="issue-card severity--high"');
+    expect(html).toContain(
+      '<h3>Regular Expression Denial of Service (ReDoS)</h3>',
+    );
+    expect(html).toContain(
+      '<h3>Improper Handling of Highly Compressed Data (Data Amplification)</h3>',
+    );
+    expect(html).toContain('<li class="card-meta-item">CWE-400</li>');
+    expect(html).toContain('<li class="card-meta-item">CWE-409</li>');
+    expect(html).toContain(
+      '<span class="detail-label">Vulnerable module:</span> jinja2@2.11.2',
+    );
+    expect(html).toContain(
+      '<span class="detail-label">Vulnerable module:</span> urllib3@1.24.3',
+    );
+    expect(html).toContain('More about this vulnerability');
   } else {
-    expect(stdout).toContain('passFail: pass');
-    expect(stdout).toContain('findings: []');
-    expect(stdout).toContain('count: 0');
+    expect(html).toContain('content="0 open issues.">');
+    expect(html).toContain('Open issues: 0');
+    expect(html).not.toContain('Open Security Issues');
+    expect(html).not.toContain('<div class="issue-card');
   }
 }
 
-describe('snyk test --toon', () => {
+describe('snyk test --html', () => {
   let server;
   let env: Record<string, string>;
 
@@ -79,13 +94,14 @@ describe('snyk test --toon', () => {
       SNYK_HOST: 'http://localhost:' + port,
       SNYK_TOKEN: '123456789',
       SNYK_DISABLE_ANALYTICS: '1',
+      INTERNAL_PREVIEW_FEATURES_ENABLED: 'true',
     };
     server = fakeServer(baseApi, env.SNYK_TOKEN);
     await server.listenPromise(port);
   });
 
   beforeEach(() => {
-    // Select the native OS route; legacy ignores TOON flags.
+    // Select the native OS route; legacy ignores HTML flags.
     server.setFeatureFlag('useExperimentalRiskScore', true);
     server.setFeatureFlag('useExperimentalRiskScoreInCLI', true);
   });
@@ -99,8 +115,8 @@ describe('snyk test --toon', () => {
     server.close(() => done());
   });
 
-  test.each(['--toon', '--toon-file-output=result.toon'])(
-    '`snyk test %s` emits UFM TOON',
+  test.each(['--html', '--html-file-output=result.html'])(
+    '`snyk test %s` emits UFM HTML',
     async (flag) => {
       const project = await createProject('npm/with-vulnerable-lodash-dep');
       const findings = JSON.parse(
@@ -121,17 +137,17 @@ describe('snyk test --toon', () => {
 
       expect(stderr).toBe('');
       expect(code).toEqual(1);
-      if (flag === '--toon') {
-        expectUfmToonContract(stdout, 'sca');
+      if (flag === '--html') {
+        expectUfmHtmlContract(stdout, 'sca');
       } else {
-        expectUfmToonContract(await project.read('result.toon'), 'sca');
-        expect(stdout).not.toMatch(toonEnvelope);
+        expectUfmHtmlContract(await project.read('result.html'), 'sca');
+        expect(stdout).not.toMatch(htmlDoctype);
         expect(stdout).toContain('Tested');
       }
     },
   );
 
-  test.each(['--toon', '--toon-file-output=result.toon'])(
+  test.each(['--html', '--html-file-output=result.html'])(
     '`snyk test %s` preserves empty API findings',
     async (flag) => {
       const project = await createProject('npm/with-vulnerable-lodash-dep');
@@ -147,17 +163,17 @@ describe('snyk test --toon', () => {
 
       expect(stderr).toBe('');
       expect(code).toEqual(0);
-      if (flag === '--toon') {
-        expectUfmToonContract(stdout, 'empty_sca');
+      if (flag === '--html') {
+        expectUfmHtmlContract(stdout, 'empty_sca');
       } else {
-        expectUfmToonContract(await project.read('result.toon'), 'empty_sca');
-        expect(stdout).not.toMatch(toonEnvelope);
+        expectUfmHtmlContract(await project.read('result.html'), 'empty_sca');
+        expect(stdout).not.toMatch(htmlDoctype);
         expect(stdout).toContain('Tested');
       }
     },
   );
 
-  test.each(['--toon', '--toon-file-output=result.toon'])(
+  test.each(['--html', '--html-file-output=result.html'])(
     '`snyk test --all-projects %s` includes both projects',
     async (flag) => {
       const project = await createProject('npm/with-vulnerable-lodash-dep');
@@ -183,11 +199,9 @@ describe('snyk test --toon', () => {
         expect(stderr).toBe('');
         expect(code).toBe(0);
         const output =
-          flag === '--toon' ? stdout : await project.read('result.toon');
-        expect(output).toMatch(/^results\[2\]:/);
-        expect(output.match(/paths\[1\]: (.+)/g)?.sort()).toEqual(
-          targetFiles.map((file) => `paths[1]: ${file}`).sort(),
-        );
+          flag === '--html' ? stdout : await project.read('result.html');
+        expect(output).toMatch(htmlDoctype);
+        expect(output.match(/<div class="container">/g)).toHaveLength(2);
         const submittedPaths = server
           .getRequests()
           .filter(
@@ -199,8 +213,8 @@ describe('snyk test --toon', () => {
           )
           .map((file: string) => file.replace(/\\/g, '/'));
         expect(submittedPaths.sort()).toEqual(targetFiles.sort());
-        if (flag !== '--toon') {
-          expect(stdout).not.toMatch(toonEnvelope);
+        if (flag !== '--html') {
+          expect(stdout).not.toMatch(htmlDoctype);
           expect(stdout).toContain('Tested');
         }
       } finally {
